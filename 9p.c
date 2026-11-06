@@ -50,7 +50,6 @@ char *calls2str[] = {
 
 void	*tbuf, *rbuf;
 FFid	*fidhash[NHASH];
-FDir	*dirhash[NHASH];
 
 FFid	*lookupfid(u32int, int);
 FFid	*uniqfid(void);
@@ -383,7 +382,6 @@ dircmp(const void *v1, const void *v2)
 long
 _9pdirread(FFid *f, Dir **d)
 {
-	FDir	*fdir;
 	char	*buf;
 	int	t;
 	u32int	n;
@@ -406,10 +404,6 @@ _9pdirread(FFid *f, Dir **d)
 		return r;
 	}
 	r = dirpackage((uchar*)buf, r, d);
-	fdir = lookupdir(f->path, PUT);
-	fdir->dirs = *d;
-	fdir->ndirs = r;
-	qsort(fdir->dirs, fdir->ndirs, sizeof(*fdir->dirs), dircmp);
 	free(buf);
 	return r;
 }
@@ -555,56 +549,3 @@ fidclone(FFid *f)
 	return newf;
 }
 
-static uint
-strkey(const char *s)
-{
-	const char	*p;
-	uint		h;
-
-	h = 0;
-	for(p = s; *p != '\0'; p++)
-		h = h*31 + *p;
-	return h;
-}
-
-FDir*
-lookupdir(const char *path, int act)
-{
-	FDir	**fdloc, *fd;
-	uint	h;
-
-	fd = NULL;
-	h = strkey(path);
-	for(fdloc = dirhash + h % NHASH; *fdloc != NULL; fdloc = &(*fdloc)->link){
-		if(strcmp((*fdloc)->path, path) == 0)
-			break;
-	}
-	switch(act){
-	case GET:
-		fd = *fdloc;
-		break;
-	case PUT:
-		if(*fdloc != NULL){
-			fd = *fdloc;
-			free(fd->dirs);
-			fd->dirs = NULL;
-			fd->ndirs = 0;
-		}else{
-			fd = emalloc(sizeof(*fd));
-			fd->path = estrdup(path);
-			*fdloc = fd;
-		}
-		break;
-	case DEL:
-		if(*fdloc == NULL)
-			return NULL;
-		fd = *fdloc;
-		*fdloc = fd->link;
-		free(fd->path);
-		free(fd->dirs);
-		free(fd);
-		fd = FDEL;
-		break;
-	}
-	return fd;
-}

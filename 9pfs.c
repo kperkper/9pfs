@@ -30,20 +30,14 @@
 #include "auth.h"
 #include "util.h"
 
-#define CACHECTL ".fscache"
 #define FFIH(ffi) ((FFid*)(uintptr_t)(ffi)->fh)
 
 enum
 {
-	CACHECTLSIZE = 8, /* sizeof("cleared\n") - 1 */
 	Msize = 32768,
 };
 
 void dir2stat(struct stat*, Dir*);
-Dir *iscached(const char*);
-Dir *addtocache(const char*);
-void clearcache(const char*);
-int iscachectl(const char*);
 char *breakpath(char*);
 void usage(void);
 
@@ -76,23 +70,10 @@ fsstat(const char *path, struct stat *st)
 static int
 fsgetattr(const char *path, struct stat *st)
 {
-	Dir *d;
-
-	if(iscachectl(path)){
-		st->st_mode = 0666 | S_IFREG;
-		st->st_uid = getuid();
-		st->st_gid = getgid();
-		st->st_size = CACHECTLSIZE;
+	if(fsstat(path, st) == 0)
 		return 0;
-	}
-	if((d = iscached(path)) == NULL)
-		d = addtocache(path);
-	if(d == NULL)
+	else
 		return -ENOENT;
-	if(strcmp(d->uid, "stub") == 0) /* hack for aux/stub */
-		return fsstat(path, st);
-	dir2stat(st, d);
-	return 0;
 }
 
 static int
@@ -120,8 +101,6 @@ fstruncate(const char *path, off_t off)
 	FFid *f;
 	Dir *d;
 
-	if(iscachectl(path))
-		return 0;
 	if((f = _9pwalk(path)) == NULL)
 		return -ENOENT;
 	if(off == 0){
@@ -144,7 +123,6 @@ fstruncate(const char *path, off_t off)
 		free(d);
 	}
 	_9pclunk(f);
-	clearcache(path);
 	return 0;
 }
 
@@ -155,8 +133,6 @@ fsrename(const char *opath, const char *npath)
 	FFid *f;
 	char *dname, *bname;
 
-	if(iscachectl(opath))
-		return -EACCES;
 	if((f = _9pwalk(opath)) == NULL)
 		return -ENOENT;
 	dname = estrdup(npath);
@@ -182,7 +158,6 @@ fsrename(const char *opath, const char *npath)
 	_9pclunk(f);
 	free(dname);
 	free(d);
-	clearcache(opath);
 	return 0;
 }
 
@@ -191,8 +166,6 @@ fsopen(const char *path, struct fuse_file_info *ffi)
 {
 	FFid *f;
 
-	if(iscachectl(path))
-		return 0;
 	if((f = _9pwalk(path)) == NULL)
 		return -ENOENT;
 	f->mode = ffi->flags & O_ACCMODE;
@@ -213,8 +186,6 @@ fscreate(const char *path, mode_t perm, struct fuse_file_info *ffi)
 	FFid *f;
 	char *dname, *bname;
 
-	if(iscachectl(path))
-		return -EACCES;
 	if((f = _9pwalk(path)) == NULL){
 		dname = estrdup(path);
 		bname = breakpath(dname);
@@ -239,7 +210,6 @@ fscreate(const char *path, mode_t perm, struct fuse_file_info *ffi)
 		}
 	}
 	ffi->fh = (uintptr_t)f;
-	clearcache(path);
 	return 0;
 }
 
@@ -249,8 +219,6 @@ fsmknod(const char *path, mode_t perm, dev_t dev)
 	FFid *f;
 	char *dname, *bname;
 
-	if(iscachectl(path))
-		return -EACCES;
 	if((f = _9pwalk(path)) == NULL){
 		dname = estrdup(path);
 		bname = breakpath(dname);
@@ -264,7 +232,6 @@ fsmknod(const char *path, mode_t perm, dev_t dev)
 			return -EACCES;
 	}
 	_9pclunk(f);
-	clearcache(path);
 	return 0;
 }
 
@@ -273,13 +240,10 @@ fsunlink(const char *path)
 {
 	FFid *f;
 
-	if(iscachectl(path))
-		return 0;
 	if((f = _9pwalk(path)) == NULL)
 		return -ENOENT;
 	if(_9premove(f) == -1)
 		return -EACCES;
-	clearcache(path);
 	return 0;
 }
 
@@ -290,15 +254,6 @@ fsread(const char *path, char *buf, size_t size, off_t off,
 	FFid *f;
 	int r;
 
-	if(iscachectl(path)){
-		if(off >= CACHECTLSIZE)
-			return 0;
-		if(size > CACHECTLSIZE - off)
-			size = CACHECTLSIZE - off;
-		memcpy(buf, &"cleared\n"[off], size);
-		clearcache(path);
-		return size;
-	}
 	f = FFIH(ffi);
 	if(f->mode & O_WRONLY)
 		return -EACCES;
@@ -315,17 +270,12 @@ fswrite(const char *path, const char *buf, size_t size, off_t off,
 	FFid *f;
 	int r;
 
-	if(iscachectl(path)){
-		clearcache(path);
-		return size;
-	}
 	f = FFIH(ffi);
 	if(f->mode & O_RDONLY)
 		return -EACCES;
 	f->offset = off;
 	if((r = _9pwrite(f, (char*)buf, size)) < 0)
 		return -EIO;
-	clearcache(path);
 	return r;
 }
 
@@ -334,10 +284,6 @@ fsopendir(const char *path, struct fuse_file_info *ffi)
 {
 	FFid *f;
 
-	if(lookupdir(path, GET) != NULL){
-		ffi->fh = (uintptr_t)0;
-		return 0;
-	}
 	if((f = _9pwalk(path)) == NULL)
 		return -ENOENT;
 	f->mode = ffi->flags & O_ACCMODE;
@@ -375,7 +321,6 @@ fsmkdir(const char *path, mode_t perm)
 	}
 	_9pclunk(f);
 	free(dname);
-	clearcache(path);
 	return 0;
 }
 
@@ -392,7 +337,6 @@ fsrmdir(const char *path)
 	}
 	if(_9premove(f) == -1)
 		return -EIO;
-	clearcache(path);
 	return 0;
 }
 
@@ -400,21 +344,14 @@ static int
 fsreaddir(const char *path, void *data, fuse_fill_dir_t ffd,
 	off_t off, struct fuse_file_info *ffi)
 {
-	FDir *f;
 	Dir *d, *e;
 	long n;
 	struct stat s;
 
 	ffd(data, ".", NULL, 0);
 	ffd(data, "..", NULL, 0);
-	ffd(data, CACHECTL, NULL, 0);
-	if((f = lookupdir(path, GET)) != NULL){
-		d = f->dirs;
-		n = f->ndirs;
-	}else{
-		if((n = _9pdirread(FFIH(ffi), &d)) < 0)
-			return -EIO;
-	}
+	if((n = _9pdirread(FFIH(ffi), &d)) < 0)
+		return -EIO;
 	for(e = d; e < d+n; e++){
 		s.st_ino = e->qid.path;
 		s.st_mode = e->mode & 0777;
@@ -443,7 +380,6 @@ fschmod(const char *path, mode_t perm)
 	}
 	_9pclunk(f);
 	free(d);
-	clearcache(path);
 	return 0;
 }
 
@@ -684,82 +620,6 @@ dir2stat(struct stat *s, Dir *d)
 	s->st_atime = d->atime;
 	s->st_mtime = s->st_ctime = d->mtime;
 	s->st_rdev = 0;
-}
-
-void
-clearcache(const char *path)
-{
-	char *dname;
-
-	dname = estrdup(path);
-	breakpath(dname);
-	lookupdir(dname, DEL);
-	free(dname);
-	return;
-}
-
-Dir*
-iscached(const char *path)
-{
-	FDir *fd;
-	Dir *d, e;
-	char *dname, *bname;
-
-	if(strcmp(path, "/") == 0)
-		return rootdir;
-	dname = estrdup(path);
-	bname = breakpath(dname);
-	if((fd = lookupdir(dname, GET)) == NULL){
-		free(dname);
-		return NULL;
-	}
-	e.name = bname;
-	d = bsearch(&e, fd->dirs, fd->ndirs, sizeof(*fd->dirs), dircmp);
-	free(dname);
-	return d;
-}
-
-Dir*
-addtocache(const char *path)
-{
-	FFid *f;
-	Dir *d;
-	char *dname;
-
-	DPRINT("addtocache %s\n", path);
-	dname = estrdup(path);
-	breakpath(dname);
-	if((f = _9pwalk(dname)) == NULL){
-		free(dname);
-		return NULL;
-	}
-	f->mode |= O_RDONLY;
-	if(_9popen(f) == -1){
-		_9pclunk(f);
-		free(dname);
-		return NULL;
-	}
-	DPRINT("addtocache about to dirread\n");
-	if(_9pdirread(f, &d) < 0){
-		_9pclunk(f);
-		free(dname);
-		return NULL;
-	}
-	_9pclunk(f);
-	free(dname);
-	return iscached(path);
-}
-
-int
-iscachectl(const char *path)
-{
-	char *s;
-
-	s = strrchr(path, '/');
-	s++;
-	if(strcmp(s, CACHECTL) == 0)
-		return 1;
-	return 0;
 }
 
 char*

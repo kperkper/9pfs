@@ -11,7 +11,6 @@ enum
 #define	 FDEL	((void*)~0)
 
 typedef struct FFid	FFid;
-typedef struct FDir	FDir;
 
 struct FFid
 {
@@ -22,14 +21,6 @@ struct FFid
 	u32int	iounit;
 	u64int	offset;
 	char	*path;
-};
-
-struct FDir
-{
-	FDir	*link;
-	char	*path;
-	Dir	*dirs;
-	long	ndirs;
 };
 
 extern FILE	*logfile;
@@ -58,7 +49,6 @@ int	_9pwrite(FFid*, char*, u32int);
 long	_9pdirread(FFid*, Dir**);
 
 int	dircmp(const void*, const void*);
-FDir	*lookupdir(const char*, int);
 
 #define DPRINT(...)				\
 do{						\
